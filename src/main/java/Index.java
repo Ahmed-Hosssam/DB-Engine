@@ -1,4 +1,4 @@
-import java.io.Serializable;
+import java.io.*;
 import java.util.*;
 
 public class Index implements Serializable {
@@ -7,6 +7,7 @@ public class Index implements Serializable {
     private final Range[][] columnRanges;
     private final int columnsCount;
     private int numOfBuckets;
+    private final static DiskHandler diskHandler = new DiskHandler();
 
     public int getNumOfBuckets() {
         return numOfBuckets;
@@ -148,4 +149,168 @@ public class Index implements Serializable {
 
         return true;
     }
+
+    static void insertIntoIndex(Vector<Index> indices, Vector<Hashtable<String, Object>> rows, String primaryKey, String pagePath) throws IOException, ClassNotFoundException {
+        for (Index index : indices) {
+            Object grid = diskHandler.deserializeObject(index.getPath());
+            for (Hashtable<String, Object> row : rows) {
+                String[] colNames = index.getColumnNames();
+                Hashtable<String, Object> keyHashTable = new Hashtable<>();
+                Hashtable<String, Range> keySearchHashTable = new Hashtable<>();
+                //keyHashTable is the key to use to search inside the bucket
+                for (String colName : colNames) {
+                    if (row.containsKey(colName)) {
+                        keyHashTable.put(colName, row.get(colName));
+                        Comparable object = (Comparable) row.get(colName);
+                        keySearchHashTable.put(colName, new Range(object, object));
+                    }
+                }
+                //Now we search for the bucket inside the index
+                Vector<Vector<Bucket>> cellsVector = index.searchInsideIndex(grid, keySearchHashTable);
+                for (Vector<Bucket> bucketVector : cellsVector) {
+                    boolean foundBucket = false;
+                    String indexPath = index.getPath();
+                    Bucket bucket = new Bucket(indexPath.substring(0, indexPath.length() - 4) + "/bucket" + index.getNumOfBuckets() + ".ser");
+                    index.setNumOfBuckets(index.getNumOfBuckets() + 1);
+
+                    for (Bucket b : bucketVector) {
+                        if (b.getNumOfRecords() < DBApp.readConfig()[1]) {
+                            foundBucket = true;
+                            bucket = b;
+                            index.setNumOfBuckets(index.getNumOfBuckets() - 1);
+                            break;
+                        }
+                    }
+                    Hashtable<Hashtable<String, Object>, Vector<RowReference>> bucketHashTable;
+                    Vector<RowReference> newVector;
+                    if (foundBucket) {
+                        bucketHashTable = (Hashtable<Hashtable<String, Object>, Vector<RowReference>>) diskHandler.deserializeObject(bucket.getPath());
+                        //We can add this record to this bucket
+                        if (bucketHashTable.containsKey(keyHashTable)) {
+                            newVector = bucketHashTable.get(keyHashTable);
+                        } else {
+                            //The values of the record was never in the index before
+                            newVector = new Vector<>();
+                        }
+                    } else {
+                        bucketVector.add(bucket);
+                        bucketHashTable = new Hashtable<>();
+                        newVector = new Vector<>();
+                    }
+
+                    newVector.add(new RowReference(pagePath, row.get(primaryKey)));
+                    bucketHashTable.put(keyHashTable, newVector);
+                    bucket.setNumOfRecords(bucket.getNumOfRecords() + 1);
+
+                    //Delete then serialize the the index and the bucket again
+                    diskHandler.delete(bucket.getPath());
+                    diskHandler.serializeObject(bucketHashTable, bucket.getPath());
+                }
+                diskHandler.delete(index.getPath());
+                diskHandler.serializeObject(grid, index.getPath());
+            }
+        }
+    }
+
+    static void insertIntoIndexByPage(Vector<Index> indices, Page page, String primaryKey) throws IOException, ClassNotFoundException {
+        Vector<Hashtable<String, Object>> pageRecords = (Vector<Hashtable<String, Object>>) diskHandler.deserializeObject(page.getPath());
+        Index.insertIntoIndex(indices, pageRecords, primaryKey, page.getPath());
+    }
+
+    public Vector<Vector<Bucket>> searchInsideIndex(Object grid, Hashtable<String, Range> colNameValue) {
+        Vector<Integer>[] indices = new Vector[colNameValue.size()];
+        String[] columnNames = getColumnNames();
+        for (int i = 0; i < indices.length; i++)
+            indices[i] = getPosition(colNameValue.get(columnNames[i]), i);
+
+        Vector<Object> subGrids = new Vector<>();
+        getSubGrids(grid, indices, 0, subGrids);
+        Vector<Vector<Bucket>> totalBuckets = new Vector<>();
+        int level = getColumnsCount() - colNameValue.size();
+
+        for (Object subGrid : subGrids)
+            getResultBuckets(subGrid, level, totalBuckets);
+
+        return totalBuckets;
+    }
+
+    private void getSubGrids(Object grid, Vector<Integer>[] v, int idx, Vector<Object> subGrids) {
+        if (idx == v.length)
+            subGrids.add(grid);
+        else
+            for (int x : v[idx])
+                getSubGrids(((Object[]) grid)[x], v, idx + 1, subGrids);
+    }
+
+    private void getResultBuckets(Object grid, int curLevel, Vector<Vector<Bucket>> buckets) {
+        if (curLevel == 0) {
+            buckets.add((Vector<Bucket>) grid);
+            return;
+        }
+        for (int i = 0; i < 10; i++)
+            getResultBuckets(((Object[]) grid)[i], curLevel - 1, buckets);
+    }
+
+    public void initializeGridCells(Object grid, int curLevel) {
+        if (curLevel == 1) {
+            for (int i = 0; i < 10; i++)
+                ((Object[]) grid)[i] = new Vector<Bucket>();
+            return;
+        }
+        for (int i = 0; i < 10; i++)
+            initializeGridCells(((Object[]) grid)[i], curLevel - 1);
+    }
+
+    static void updateMetaDataFile(String tableName, String[] indexColumns) throws IOException {
+
+        FileReader oldMetaDataFile = new FileReader("src/main/resources/metadata.csv");
+        BufferedReader br = new BufferedReader(oldMetaDataFile);
+
+        StringBuilder newMetaData = new StringBuilder();
+        String curLine = "";
+
+        while ((curLine = br.readLine()) != null) {
+            String[] curLineSplit = curLine.split(",");
+
+            if (!curLineSplit[0].equals(tableName)) {
+                newMetaData.append(curLine);
+                newMetaData.append("\n");
+                continue;
+            }
+
+            StringBuilder tmpString = new StringBuilder(curLine);
+
+            for (String col : indexColumns) {
+                if (col.equals(curLineSplit[1])) {
+                    tmpString = new StringBuilder();
+                    for (int i = 0; i < curLineSplit.length; i++)
+                        if (i == 4)
+                            tmpString.append("True,");
+                        else if (i == 6)
+                            tmpString.append(curLineSplit[i]);
+                        else
+                            tmpString.append(curLineSplit[i] + ",");
+                }
+            }
+            newMetaData.append(tmpString + "\n");
+        }
+
+        FileWriter metaDataFile = new FileWriter("src/main/resources/metadata.csv");
+        metaDataFile.write(newMetaData.toString());
+        metaDataFile.close();
+    }
+
+    public Hashtable<String, Range> getColNameRange(Hashtable<String, Object> columnNameValue) {
+        Hashtable<String, Range> colNameRange = new Hashtable<>();
+        String[] columnNames = getColumnNames();
+        for (String columnName : columnNames) {
+            if (!columnNameValue.containsKey(columnName))
+                break;
+            Comparable val = (Comparable) columnNameValue.get(columnName);
+            colNameRange.put(columnName, new Range(val, val));
+
+        }
+        return colNameRange;
+    }
+
 }

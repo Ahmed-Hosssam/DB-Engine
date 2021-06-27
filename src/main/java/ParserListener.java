@@ -24,7 +24,7 @@ public class ParserListener extends MiniSQLParserBaseListener {
     public void enterSelect_stmt(MiniSQLParser.Select_stmtContext ctx) {
         try {
             String tableName = ctx.select_core().children.get(3).getText();
-            Object[] info = dbApp.getTableInfo(tableName);
+            Object[] info = Table.getTableInfo(tableName);
             Hashtable<String, String> colDataTypes = (Hashtable<String, String>) info[0];
             Hashtable<String, Object> colMinValues = (Hashtable<String, Object>) info[1];
             String clusteringType = (String) info[3];
@@ -133,7 +133,7 @@ public class ParserListener extends MiniSQLParserBaseListener {
         try {
             String tableName = ctx.table_name().getText();
             Hashtable<String, Object> colNameValue = new Hashtable<>();
-            Hashtable<String, String> colNameType = (Hashtable<String, String>) (dbApp.getTableInfo(tableName))[0];
+            Hashtable<String, String> colNameType = (Hashtable<String, String>) (Table.getTableInfo(tableName))[0];
             if (ctx.column_name().size() != ctx.literals().size()) {
                 throw new DBAppException("Invalid insert statement");
             }
@@ -159,7 +159,7 @@ public class ParserListener extends MiniSQLParserBaseListener {
         try {
             String tableName = ctx.table_name().getText();
             Hashtable<String, Object> colNameValue = new Hashtable<>();
-            Object[] info = dbApp.getTableInfo(tableName);
+            Object[] info = Table.getTableInfo(tableName);
             Hashtable<String, String> colNameType = (Hashtable<String, String>) info[0];
             String clusteringCol = (String) info[4];
             if (!ctx.update_cond().column_name().getText().equals(clusteringCol)) {
@@ -190,7 +190,7 @@ public class ParserListener extends MiniSQLParserBaseListener {
             String tableName = ctx.table_name().getText();
             traverse(ctx.limited_expr());
             Hashtable<String, Object> colNameVal = new Hashtable<>();
-            Hashtable<String, String> colNameType = (Hashtable<String, String>) (dbApp.getTableInfo(tableName))[0];
+            Hashtable<String, String> colNameType = (Hashtable<String, String>) (Table.getTableInfo(tableName))[0];
             for (int i = 0; i < terminals.size(); i += 4) {
                 try {
                     colNameVal.put(terminals.get(i), castString(colNameType.get(terminals.get(i)), terminals.get(i + 2)));
